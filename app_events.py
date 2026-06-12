@@ -7,8 +7,8 @@ from lib.common import (dict_change_parameter, dict_change_preset,
                         dict_effect_type, dict_enabled, dict_parameter,
                         dict_preset, dict_preset_stored, dict_refresh_onoff,
                         dict_reload_client_interface, dict_show_hide_pedal,
-                        dict_state, dict_turn_on_off, dict_url, dict_value,
-                        dict_visible, get_amp_effect_name)
+                        dict_state, dict_turn_on_off, dict_update_preset,
+                        dict_url, dict_value, dict_visible, get_amp_effect_name)
 
 ###########################
 # SocketIO EventListeners
@@ -32,8 +32,10 @@ def change_effect_parameter(data):
 def change_preset(data):
     if not amp.connected or amp.config is None:
         return
+    preset = int(data[dict_preset])
     amp.config.last_call = dict_change_preset
-    amp.change_to_preset(int(data[dict_preset]))
+    socketio.emit(dict_update_preset, {dict_value: preset})
+    amp.change_to_preset(preset)
 
 
 @socketio.event

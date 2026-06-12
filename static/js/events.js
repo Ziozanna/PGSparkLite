@@ -17,13 +17,20 @@ $(document).ready(function () {
     window.location.href = data.url;
   });
 
+  socket.on("preset-loaded", function (data) {
+    $(".preset_name h2").text(data.name);
+    $("#preset-bpm").html(data.bpm);
+    $("#loading").hide();
+    $("#effects_panel").load("/preset/panel");
+  });
+
   socket.on("connection-lost", function (data) {
     window.location.href = data.url;
   });
 
   // Preset button change
   socket.on("update-preset", function (data) {
-    $(".preset_button").removeClass("selected");
+    $(".preset_button").removeClass("selected flash");
     $("#preset_" + data.value).addClass("selected");
     $("#loading").show();
   });

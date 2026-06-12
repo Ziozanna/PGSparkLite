@@ -34,6 +34,15 @@ def _db_close(exc):
         database.close()
 
 
+@app.route('/preset/panel', methods=['GET'])
+def preset_panel():
+    if amp.config is None:
+        return '', 204
+    return render_template('preset_panel.html',
+                           config=amp.config,
+                           pedal_presets=get_pedal_presets(amp.config))
+
+
 @app.route('/bpm', methods=['GET', 'POST'])
 def bpm():
     if request.method == 'GET':

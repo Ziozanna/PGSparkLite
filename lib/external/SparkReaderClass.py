@@ -24,11 +24,13 @@ class SparkReadMessage:
     def __init__(self):
         self.data = b''
         self.message = []
+        self.python = None
         self.current_preset = None
 
     def set_message(self, msg):
         self.data = msg
         self.message = []
+        self.python = None
         
     def structure_data(self):
         self.cmd=0

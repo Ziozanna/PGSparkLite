@@ -23,10 +23,11 @@
     <script src="/js/debug-log.js"></script>
 {% endif %}
 
+<div id="effects_panel">
 <div id="GATE_container" class="effect_container {% if config.gate["OnOff"] == 'Off' %} grayscale {% endif %}">
     {{ effect_container("GATE", config.gate, config.gates, False, pedal_presets["GATE"]) }}
 </div>
- <div id="COMP_container" class="effect_container {% if config.comp["OnOff"] == 'Off' %} grayscale {% endif %}">
+<div id="COMP_container" class="effect_container {% if config.comp["OnOff"] == 'Off' %} grayscale {% endif %}">
     {{ effect_container("COMP", config.comp, config.comps, True, pedal_presets["COMP"]) }}
 </div>
 <div id="DRIVE_container" class="effect_container {% if config.drive["OnOff"] == 'Off' %} grayscale {% endif %}">
@@ -43,6 +44,7 @@
 </div>
 <div id="REVERB_container" class="effect_container {% if config.reverb["OnOff"] == 'Off' %} grayscale {% endif %}">
     {{ effect_container("REVERB", config.reverb, config.reverbs, True, pedal_presets["REVERB"]) }}
+</div>
 </div>
 <div class="system_tools">
     <button class="tool_button" id="eject">

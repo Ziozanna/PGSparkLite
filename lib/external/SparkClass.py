@@ -160,7 +160,18 @@ class SparkMessage:
 
         self.start_message (cmd, sub_cmd)
         self.add_bytes (bytes([0]))
-        self.add_bytes (bytes([preset_num]))         
+        self.add_bytes (bytes([preset_num]))
+        return self.end_message ()
+
+    def store_hardware_preset (self, preset_num):
+        # Commit the uploaded preset data to flash on the amp.
+        # Amp responds with cmd=03/sub=27 to confirm.
+        cmd = 0x01
+        sub_cmd = 0x27
+
+        self.start_message (cmd, sub_cmd)
+        self.add_bytes (bytes([0]))
+        self.add_bytes (bytes([preset_num]))
         return self.end_message ()
 
     def turn_effect_onoff (self, pedal, onoff):

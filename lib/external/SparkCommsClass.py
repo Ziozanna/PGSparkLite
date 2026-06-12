@@ -11,6 +11,7 @@ class SparkComms:
         self._client = client
         self._loop   = loop
         self._rx_buf = queue.Queue()
+        self._last_preset = None
 
     # Called from the asyncio loop when the amp sends a notification
     def _on_notify(self, sender, data: bytearray):
@@ -52,7 +53,7 @@ class SparkComms:
         try:
             result = b''
             for _ in range(dat_len):
-                result += self._rx_buf.get(timeout=10)
+                result += self._rx_buf.get(timeout=0.3)
             return result
         except queue.Empty:
             return None
@@ -78,6 +79,7 @@ class SparkComms:
               "00000000000000000000000000000000" "0000f7"
         )
         print(f"BLE send preset_request: {arg}", flush=True)
+        self._last_preset = preset
         self.send_it(bytes.fromhex(arg))
 
     def send_keepalive(self):
@@ -126,12 +128,14 @@ class SparkComms:
                 break
 
         # Phase 2: once SysEx started, read until 0xf7 with normal timeout.
-        # If the link drops mid-SysEx, discard and wait for the next 0xf0.
+        # 0xf0 mid-stream means a new SysEx started (previous was incomplete —
+        # e.g. two SysEx concatenated in one BLE notification). Restart from it.
+        # If timeout occurs, the link dropped mid-SysEx — discard and re-sync.
         while True:
             b = self.read_it(1)
             if b is None:
                 print("BLE: mid-SysEx timeout, discarding partial chunk", flush=True)
-                rd_data = b''
+                rd_data = b'\xf0'
                 # restart from phase 1
                 while True:
                     try:
@@ -141,6 +145,11 @@ class SparkComms:
                     if b == b'\xf0':
                         rd_data = b'\xf0'
                         break
+                continue
+            if b == b'\xf0':
+                # New SysEx boundary detected inside stream — discard partial and restart
+                print("BLE: unexpected f0 mid-SysEx, restarting", flush=True)
+                rd_data = b'\xf0'
                 continue
             rd_data += b
             if b == b'\xf7':
@@ -154,12 +163,15 @@ class SparkComms:
 
     def get_data(self):
         resp = []
+        in_multichunk = False
         while True:
             blk = self.get_block()
-            resp.append(blk)
-            # SysEx content: f0 01 [seq] [chk] [cmd] [sub] [7bit-data...] f7
             sysex = blk[16:]
             if len(sysex) < 7:
+                if in_multichunk:
+                    resp, in_multichunk = self._retry_preset(resp)
+                    continue
+                resp.append(blk)
                 break
             cmd     = sysex[4]
             sub_cmd = sysex[5]
@@ -169,7 +181,33 @@ class SparkComms:
             if cmd in (0x01, 0x03) and sub_cmd == 0x01 and len(sysex) > 8:
                 num_chunks = sysex[7]
                 this_chunk = sysex[8]
+                if this_chunk == 0:
+                    resp = [blk]
+                    in_multichunk = num_chunks > 1
+                else:
+                    resp.append(blk)
                 if this_chunk + 1 < num_chunks:
                     continue
-            break
+                in_multichunk = False
+                break
+            else:
+                if in_multichunk:
+                    # Non-preset block arrived while accumulating chunks — retry
+                    resp, in_multichunk = self._retry_preset(resp)
+                    continue
+                resp.append(blk)
+                break
         return resp
+
+    def _retry_preset(self, resp):
+        import time
+        time.sleep(0.3)
+        if self._last_preset is not None:
+            print(f"BLE: multi-chunk interrupted, retrying preset {self._last_preset}", flush=True)
+            self.send_preset_request(self._last_preset)
+        else:
+            print("BLE: multi-chunk interrupted, no preset to retry", flush=True)
+        # Reset in_multichunk=False so the next non-preset block (e.g. keepalive)
+        # is returned normally — listener filters it and loops, then get_data()
+        # starts fresh and picks up chunk 0 from the retry request.
+        return [], False

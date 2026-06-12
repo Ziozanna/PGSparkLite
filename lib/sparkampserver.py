@@ -23,7 +23,7 @@ from lib.common import (dict_amp, dict_bias_noisegate, dict_bias_reverb, dict_BP
                         dict_old_effect, dict_On, dict_OnOff, dict_parameter,
                         dict_Parameter, dict_pedal_chain_preset,
                         dict_pedal_status, dict_preset, dict_preset_corrupt,
-                        dict_Preset_Number, dict_preset_stored,
+                        dict_preset_loaded, dict_Preset_Number, dict_preset_stored,
                         dict_refresh_onoff, dict_reverb, dict_state,
                         dict_turn_on_off, dict_update_debug_log,
                         dict_update_effect, dict_update_onoff,
@@ -343,8 +343,14 @@ class SparkAmpServer:
         for i in preset:
             self.comms.send_it(i)
 
-        change_user_preset = self.msg.change_hardware_preset(self.config.preset)
-        self.comms.send_it(change_user_preset[0])
+        # cmd=01/sub=27 commits the uploaded data to flash on the Spark Go.
+        # (change_hardware_preset/sub=38 is a no-op when already on that slot.)
+        store_cmd = self.msg.store_hardware_preset(self.config.preset)
+        self.comms.send_it(store_cmd[0])
+
+        # Spark Go does not send a reliable store confirmation — emit immediately.
+        self.config.last_call = ''
+        self.socketio.emit(dict_preset_stored, {dict_message: msg_amp_preset_stored})
 
     def toggle_effect_onoff(self, effect_type):
         effect      = None
@@ -394,6 +400,9 @@ class SparkAmpServer:
             "turn_effect_onoff - effect: " + effect + " state: " + state)
 
     def request_preset(self, hw_preset):
+        # Clear any stale current_preset set by keepalive (cmd=03 sub=10) so it
+        # doesn't override the correct preset number embedded in the response data.
+        self.reader.current_preset = None
         self.comms.send_preset_request(hw_preset)
 
     # ------------------------------------------------------------------ #
@@ -416,7 +425,8 @@ class SparkAmpServer:
         }
 
     def load_inbound_data(self, data):
-        if self.config is None:
+        is_initial = self.config is None
+        if is_initial:
             self.config = SparkDevices(data)
         else:
             self.config.parse_preset(data)
@@ -432,7 +442,13 @@ class SparkAmpServer:
         self.update_plugin()
 
         self.socketio.emit(dict_pedal_status, self.get_pedal_status())
-        self.socketio.emit(dict_connection_success, {'url': '/'})
+        if is_initial:
+            self.socketio.emit(dict_connection_success, {'url': '/'})
+        else:
+            self.socketio.emit(dict_preset_loaded, {
+                dict_name: self.config.presetName,
+                dict_bpm: int(self.config.bpm),
+            })
 
     def update_plugin(self, effect_name=None, param=None,
                       enabled=None, effect_type=None):
