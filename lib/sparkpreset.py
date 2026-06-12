@@ -56,7 +56,8 @@ class SparkPreset:
         self.reverb[dict_Parameters] = config.reverb[dict_Parameters]
 
     def _map_chain_preset_to_amp_preset(self, config):
-        self.preset = [0x00, 0x7f]
+        # Use the preset slot set by send_preset (chain_preset.preset = target_slot)
+        self.preset = [0x00, getattr(config, 'preset', 3)]
         self.uuid = config.uuid
         self.name = config.name
         self.bpm = config.bpm

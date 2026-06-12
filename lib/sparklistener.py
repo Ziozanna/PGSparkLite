@@ -35,6 +35,9 @@ class SparkListener:
                 self.reader.set_message(dat)
                 self.reader.read_message()
 
+                if not self.reader.message:
+                    continue
+
                 if self.reader.message[0][0] == 4 and self.reader.message[0][1] == 0:
                     #Acknowledgement
                     continue
@@ -46,13 +49,14 @@ class SparkListener:
                 if self.reader.python is None:
                     continue
 
+                # Strip null bytes: Spark Go pads SysEx chunks with \x00
+                python_str = self.reader.python.replace('\x00', '')
                 self.notifier.raise_event(
-                    dict_callback, data=literal_eval(self.reader.python))
+                    dict_callback, data=literal_eval(python_str))
 
             except Exception as err:
-                print('Message parsing error', err)
-                self.notifier.raise_event(dict_preset_corrupt)
-                break
+                print('Message parsing error (skipped):', err)
+                # Don't disconnect on transient parse errors — keep listening
 
     def stop(self):
         self.listening = False

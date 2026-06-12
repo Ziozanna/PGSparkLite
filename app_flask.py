@@ -96,10 +96,12 @@ def connect():
 def delete_chain_preset():
     preset_id = int(request.form[dict_preset_id])
     if verify_delete_chain_preset(preset_id):
-        chain_presets = get_chain_presets()
+        chain_presets = list(get_chain_presets())
+        # Keep first remaining preset selected so it stays visible
+        preset_selected = chain_presets[0].id if chain_presets else 0
         return render_template('chain_preset_selector.html',
                                chain_presets=chain_presets,
-                               preset_selected=0)
+                               preset_selected=preset_selected)
 
     return dict_error
 
@@ -145,7 +147,8 @@ def index():
     if request.method == 'GET':
         preset_query = request.args.get(dict_preset_id)
         if preset_query == None:
-            preset_id = 0
+            # Preserve the last active chain preset across page reloads
+            preset_id = amp.config.chain_preset_id if amp.config else 0
         else:
             preset_id = int(preset_query)
             amp.config.last_call = dict_pedal_chain_preset

@@ -8,5 +8,5 @@
 # if you kow your amp address, specify it here(can see in logs). This whiil spped up connection to amp.
 ###########################################################################
 
-amp_bt_address = None
+amp_bt_address = "F7:EB:ED:19:01:40"  # Spark GO BLE
 

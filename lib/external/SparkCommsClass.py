@@ -14,6 +14,12 @@ class SparkComms:
 
     # Called from the asyncio loop when the amp sends a notification
     def _on_notify(self, sender, data: bytearray):
+        # decode SysEx header for readability: cmd sub
+        info = ""
+        d = bytes(data)
+        if len(d) >= 6 and d[0] == 0xf0:
+            info = f" cmd={d[4]:02x} sub={d[5]:02x}"
+        print(f"RX ({len(data)}){info}: {data.hex()}", flush=True)
         for b in data:
             self._rx_buf.put(bytes([b]))
 
@@ -23,6 +29,15 @@ class SparkComms:
 
     def send_it(self, dat):
         try:
+            # decode for readability
+            info = ""
+            if len(dat) >= 6 and dat[0:2] == b'\x01\xfe':
+                sysex = dat[16:] if len(dat) > 16 else b''
+                if len(sysex) >= 6 and sysex[0] == 0xf0:
+                    info = f" cmd={sysex[4]:02x} sub={sysex[5]:02x}"
+            elif len(dat) >= 6 and dat[0] == 0xf0:
+                info = f" cmd={dat[4]:02x} sub={dat[5]:02x}"
+            print(f"TX ({len(dat)}){info}: {dat.hex()}", flush=True)
             future = asyncio.run_coroutine_threadsafe(
                 self._client.write_gatt_char(SPARK_CHAR_WRITE, dat, response=False),
                 self._loop,
@@ -55,93 +70,106 @@ class SparkComms:
 
     def send_preset_request(self, preset):
         preset_hex = "%0.2x" % preset
+        # SysEx only (no \x01\xfe wrapper) — Spark Go BLE expects bare SysEx
         arg = (
-            "01fe000053fe3c000000000000000000"
             "f0010400" "0201"
             "00" "00" + preset_hex
             + "00000000000000000000000000000000"
               "00000000000000000000000000000000" "0000f7"
         )
+        print(f"BLE send preset_request: {arg}", flush=True)
+        self.send_it(bytes.fromhex(arg))
+
+    def send_keepalive(self):
+        # Lightweight ping: asks for current preset number (cmd=02, sub=10).
+        # The amp responds with cmd=03/sub=10 which the listener filters out.
+        arg = "f0010400" "0210" + "00" * 34 + "f7"
         self.send_it(bytes.fromhex(arg))
 
     def send_state_request(self):
+        # SysEx only (no \x01\xfe wrapper) — Spark Go BLE expects bare SysEx
         arg = (
-            "01fe000053fe3c000000000000000000"
             "f0010400" "0210"
             "00" "0000"
             "0000000000000000000000000000000000"
             "000000000000000000000000000000"
             "0000f7"
         )
+        print(f"BLE send state_request(1): {arg}", flush=True)
         self.send_it(bytes.fromhex(arg))
 
         arg = (
-            "01fe000053fe3c000000000000000000"
             "f0010400" "0201"
             "00" "0100"
             "0000000000000000000000000000000000"
             "000000000000000000000000000000"
             "0000f7"
         )
+        print(f"BLE send state_request(2): {arg}", flush=True)
         self.send_it(bytes.fromhex(arg))
 
     def get_block(self):
-        rd_data  = b''
-        read_len = 1
-        a = -1
-        while a == -1:
-            chunk = self.read_it(read_len)
-            if chunk is None:
-                raise ConnectionError("BLE read timeout")
-            rd_data += chunk
-            a = rd_data.find(b'\x01\xfe')
-            if a >= 0:
-                rd_data = rd_data[a:]
-                while len(rd_data) < 7:
-                    rd_data += self.read_it(read_len)
-                blk_len = rd_data[6]
-                while len(rd_data) < blk_len:
-                    rd_data += self.read_it(read_len)
-                res     = rd_data[:blk_len]
-                rd_data = rd_data[blk_len:]
-        return res
+        # Spark Go BLE sends raw SysEx chunks (f0...f7) without the \x01\xfe
+        # block wrapper used by classic BT. Read one SysEx chunk and wrap it
+        # in a synthetic \x01\xfe header so SparkReaderClass works unchanged.
+
+        # Phase 1: wait indefinitely for SysEx start 0xf0.
+        # The amp is silent between user interactions — no timeout here.
+        rd_data = b''
+        while True:
+            try:
+                b = self._rx_buf.get(timeout=1.0)
+            except queue.Empty:
+                continue
+            if b == b'\xf0':
+                rd_data = b'\xf0'
+                break
+
+        # Phase 2: once SysEx started, read until 0xf7 with normal timeout.
+        # If the link drops mid-SysEx, discard and wait for the next 0xf0.
+        while True:
+            b = self.read_it(1)
+            if b is None:
+                print("BLE: mid-SysEx timeout, discarding partial chunk", flush=True)
+                rd_data = b''
+                # restart from phase 1
+                while True:
+                    try:
+                        b = self._rx_buf.get(timeout=1.0)
+                    except queue.Empty:
+                        continue
+                    if b == b'\xf0':
+                        rd_data = b'\xf0'
+                        break
+                continue
+            rd_data += b
+            if b == b'\xf7':
+                break
+
+        # Synthetic block: \x01\xfe\x00\x00\x41\xff + [len] + 9×\x00 + SysEx
+        # SparkReaderClass.structure_data() reads block[6]=length, block[16:]=SysEx
+        block_len = min(16 + len(rd_data), 255)
+        header = b'\x01\xfe\x00\x00\x41\xff' + bytes([block_len]) + b'\x00' * 9
+        return header + rd_data
 
     def get_data(self):
-        resp       = []
-        last_block = False
-
-        while not last_block:
+        resp = []
+        while True:
             blk = self.get_block()
             resp.append(blk)
-
-            blk_len   = blk[6]
-            direction = blk[4:6]
-            seq       = blk[18]
-            cmd       = blk[20]
-            sub_cmd   = blk[21]
-
-            if direction == b'\x53\xfe' and cmd == 0x01 and sub_cmd != 0x04:
-                self.send_ack(seq, cmd)
-
-            if direction == b'\x53\xfe':
-                if blk_len < 0xad:
-                    last_block = True
-                else:
-                    num_chunks = blk[23]
-                    this_chunk = blk[24]
-                    if this_chunk + 1 == num_chunks:
-                        last_block = True
-
-            if direction == b'\x41\xff':
-                if blk_len < 0x6a:
-                    last_block = True
-                else:
-                    pos = blk.rfind(b'\xf0\x01')
-                    try:
-                        num_chunks = blk[pos + 7]
-                        this_chunk = blk[pos + 8]
-                        if this_chunk == len(resp) and this_chunk + 1 == num_chunks:
-                            last_block = True
-                    except Exception:
-                        pass
+            # SysEx content: f0 01 [seq] [chk] [cmd] [sub] [7bit-data...] f7
+            sysex = blk[16:]
+            if len(sysex) < 7:
+                break
+            cmd     = sysex[4]
+            sub_cmd = sysex[5]
+            # Multi-chunk preset messages (cmd=1 or 3, sub=1) arrive as
+            # consecutive SysEx notifications. sysex[6]=bitmask, sysex[7]=
+            # num_chunks, sysex[8]=this_chunk (both < 128, bitmask irrelevant).
+            if cmd in (0x01, 0x03) and sub_cmd == 0x01 and len(sysex) > 8:
+                num_chunks = sysex[7]
+                this_chunk = sysex[8]
+                if this_chunk + 1 < num_chunks:
+                    continue
+            break
         return resp

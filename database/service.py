@@ -114,6 +114,13 @@ def get_chain_preset_by_id(id):
         return None
 
 
+def get_chain_preset_by_uuid(uuid):
+    try:
+        return ChainPreset.get(ChainPreset.uuid == uuid)
+    except DoesNotExist:
+        return None
+
+
 def get_pedal_presets(config):
     presets = {}
 

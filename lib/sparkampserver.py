@@ -10,7 +10,7 @@ import threading
 from bleak import BleakClient, BleakScanner
 from EventNotifier import Notifier
 
-from lib.common import (dict_amp, dict_bias_reverb, dict_BPM, dict_bpm,
+from lib.common import (dict_amp, dict_bias_noisegate, dict_bias_reverb, dict_BPM, dict_bpm,
                         dict_bpm_change, dict_callback, dict_chain_preset,
                         dict_change_effect, dict_Change_Effect_State,
                         dict_change_parameter, dict_change_preset, dict_comp,
@@ -58,6 +58,7 @@ class SparkAmpServer:
         self._ble_client = None
         self._ble_loop   = None
         self._ble_thread = None
+        self._keepalive_timer = None
 
         self.notifier = Notifier(
             [dict_callback, dict_connection_lost, dict_preset_corrupt])
@@ -81,22 +82,51 @@ class SparkAmpServer:
         loop.run_forever()
 
     async def _ble_connect(self, address=None):
+        device = None
         if address:
             device = await BleakScanner.find_device_by_address(address, timeout=10)
-        else:
-            print("Scanning for Spark Go...")
+            if device is None:
+                print(f"Address {address} not found, falling back to UUID scan...")
+
+        if device is None:
+            print("Scanning for Spark Go by service UUID...")
             device = await BleakScanner.find_device_by_filter(
                 lambda d, adv: SPARK_SERVICE_UUID in (adv.service_uuids or []),
                 timeout=15,
             )
 
         if device is None:
-            raise Exception("Spark Go not found — make sure it is powered on")
+            raise Exception("Spark Go not found — make sure it is powered on and in pairing mode")
 
         print(f"Found: {device.name} ({device.address})")
-        client = BleakClient(device)
+        client = BleakClient(device, disconnected_callback=self._on_ble_disconnect)
         await client.connect()
         return client
+
+    def _on_ble_disconnect(self, client):
+        print("BLE disconnected (Bleak callback)")
+        self._stop_keepalive()
+        if self.connected:
+            self.connection_lost_event()
+
+    def _start_keepalive(self):
+        self._stop_keepalive()
+        self._keepalive_timer = threading.Timer(20.0, self._keepalive_tick)
+        self._keepalive_timer.daemon = True
+        self._keepalive_timer.start()
+
+    def _stop_keepalive(self):
+        if self._keepalive_timer:
+            self._keepalive_timer.cancel()
+            self._keepalive_timer = None
+
+    def _keepalive_tick(self):
+        if self.connected and self.comms:
+            try:
+                self.comms.send_keepalive()
+            except Exception:
+                pass
+            self._start_keepalive()
 
     # ------------------------------------------------------------------ #
     #  Public interface
@@ -184,6 +214,7 @@ class SparkAmpServer:
             t.start()
 
             self.connected = True
+            self._start_keepalive()
 
             self.socketio.emit(dict_connection_message,
                                {dict_message: msg_retrieving_config})
@@ -207,6 +238,7 @@ class SparkAmpServer:
         return self.comms.send_state_request()
 
     def eject(self):
+        self._stop_keepalive()
         self.config = None
         self.listener.stop()
         self.request_preset(0)
@@ -265,18 +297,29 @@ class SparkAmpServer:
 
         self.log_debug_message("expression_pedal - plugin.type not found")
 
+    # Slot used as dedicated "chain preset" slot on Spark Go (hardware preset 4).
+    # Spark Go has no 0x7f "user slot" like Spark 40, so we use a fixed valid slot.
+    CHAIN_PRESET_SLOT = 3
+
     def send_preset(self, chain_preset):
         self.log_debug_message("send_preset - " + chain_preset.name)
+        import time
 
-        chain_preset.preset = self.config.preset
+        target_slot = self.CHAIN_PRESET_SLOT
+        chain_preset.preset = target_slot
         spark_preset = SparkPreset(chain_preset, type=dict_chain_preset)
-        preset = self.msg.create_preset(spark_preset.json())
+        preset_blocks = self.msg.create_preset(spark_preset.json())
 
-        for i in preset:
-            self.comms.send_it(i)
+        print(f"send_preset: uploading {len(preset_blocks)} block(s) to slot {target_slot}", flush=True)
+        for block in preset_blocks:
+            self.comms.send_it(block)
 
-        change_user_preset = self.msg.change_hardware_preset(0x7f)
-        self.comms.send_it(change_user_preset[0])
+        # Wait for amp ACK (cmd=05/sub=01) before switching
+        time.sleep(0.5)
+
+        # Switch to the target slot — amp loads the newly uploaded data
+        print(f"send_preset: switching to slot {target_slot}", flush=True)
+        self.comms.send_it(self.msg.change_hardware_preset(target_slot)[0])
 
         self.config.parse_chain_preset(chain_preset)
 
@@ -323,8 +366,11 @@ class SparkAmpServer:
         elif effect_type == dict_amp:
             effect = self.config.amp
 
+        if effect is None:
+            return {}
+
         if effect_name is None:
-            get_js_effect_name(effect[dict_Name])
+            effect_name = get_js_effect_name(effect[dict_Name])
 
         state = dict_Off
         if effect[dict_OnOff] == dict_Off:
@@ -374,6 +420,14 @@ class SparkAmpServer:
             self.config = SparkDevices(data)
         else:
             self.config.parse_preset(data)
+            # Restore chain_preset_id if the amp echoed back a known chain preset UUID
+            try:
+                from database.service import get_chain_preset_by_uuid
+                match = get_chain_preset_by_uuid(self.config.uuid)
+                if match:
+                    self.config.chain_preset_id = match.id
+            except Exception:
+                pass
 
         self.update_plugin()
 

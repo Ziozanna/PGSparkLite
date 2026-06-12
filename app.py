@@ -23,4 +23,4 @@ from app_events import *
 from app_utilities import *
 
 if __name__ == '__main__':
-    socketio.run(app)
+    socketio.run(app, allow_unsafe_werkzeug=True)

@@ -17,6 +17,8 @@ from lib.common import (dict_change_parameter, dict_change_preset,
 
 @socketio.event
 def change_effect_parameter(data):
+    if not amp.connected or amp.config is None:
+        return
     effect = str(data[dict_effect])
     parameter = int(data[dict_parameter])
     value = float(data[dict_value])
@@ -28,6 +30,8 @@ def change_effect_parameter(data):
 
 @socketio.event
 def change_preset(data):
+    if not amp.connected or amp.config is None:
+        return
     amp.config.last_call = dict_change_preset
     amp.change_to_preset(int(data[dict_preset]))
 
@@ -63,6 +67,8 @@ def reload_interface(data):
 
 @socketio.event
 def reset_config():
+    if amp.config is None:
+        return
     amp.config.reset_static()
     amp.config.load()
 
@@ -79,12 +85,16 @@ def set_expression_onoff(data):
 
 @socketio.event
 def show_hide_pedal(data):
+    if amp.config is None:
+        return
     amp.config.update_config(
         data[dict_effect_type], dict_show_hide_pedal, data[dict_visible])
 
 
 @socketio.event
 def store_amp_preset():
+    if not amp.connected or amp.config is None:
+        return
     amp.config.last_call = dict_preset_stored
     amp.store_amp_preset()
 
@@ -99,6 +109,8 @@ def toggle_debug_logging(data):
 
 @socketio.event
 def toggle_effect_onoff(data):
+    if not amp.connected or amp.config is None:
+        return
     effect_type = data[dict_effect_type]
     result = amp.toggle_effect_onoff(effect_type)
     socketio.emit(dict_refresh_onoff, result)
@@ -106,6 +118,8 @@ def toggle_effect_onoff(data):
 
 @socketio.event
 def turn_effect_onoff(data):
+    if not amp.connected or amp.config is None:
+        return
     effect = str(data[dict_effect])
     state = data[dict_state]
 
